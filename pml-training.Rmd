@@ -1,0 +1,161 @@
+Executive Summary
+========================================================
+This report looks at the personal activity data collected from the accelerometers on the belt, forearm, arm and dumbell of 6 participants, and predicts how well the activity was performed. The participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. Since this is a classification problem, we can use one of the following classification algorightms  
+- Classification Trees
+- Bagging
+- Random Forests (Combination of Classification Trees and Bagging)
+- Boosting
+
+We will use Random Forests as it gives the best accuracy. We want to have out of sample error rate of less than 5%
+
+## Approach
+
+The overall approach to predict the model can be summarized as
+
+- Explore the data to get a basic understanding of the dataset
+- Impute the data such that NAs are replaced with the means of the columns
+- Get rid of all the predictors which have near zero variance
+- Now check for correlation among the remaining predictors and remove collinearity
+
+I used the principal component analysis also, to get better predictors, but didn't find the model any better, and PCA made it hard to understand the variables once the model was built.  
+```{r echo=FALSE}
+suppressMessages(library(knitr))
+```
+`r opts_chunk$set(cache=TRUE)`
+## Load the dataset
+```{r}
+setwd("/Users/msattarwala/coursera/ml")
+suppressMessages(library(caret))
+if (!file.exists("pml-training.csv")) {
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",method="curl",
+                destfile="pml-training.csv")
+  }
+if (!file.exists('pml-testing.csv')) {
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",method="curl",
+                destfile="pml-testing.csv")
+  }
+```
+
+## Exploratory Analysis of the Dataset
+```{r}
+set.seed(12354)
+trainData <- read.csv("pml-training.csv")
+inTrain <- createDataPartition(y=trainData$classe,p=0.7,list=FALSE)
+training <- trainData[inTrain,]
+testing <- trainData[-inTrain,]
+testData <- read.csv("pml-testing.csv")
+dim(training)
+summary(training)
+```
+
+From summary we can quickly observe that some of the predictors don't have a lot of variance.
+
+## Data Cleaning
+
+From the exploratory analysis we saw that there are some variables that we know will not be useful in our prediction model. Let's remove them from our set of predictors
+```{r}
+drops <- c("X","user_name","raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp","new_window","num_window")
+training <- training[,!(names(training) %in% drops)]
+testing <- testing[,!(names(training) %in% drops)]
+testData <- testData[,!(names(training) %in% drops)]
+trainingClasse <- training$classe
+testingClasse <- testing$classe
+training <- training[,-which(colnames(training)=="classe")]
+testing <- testing[,-which(colnames(testing)=="classe")]
+testData <- testData[,-which(colnames(testData)=="problem_id")]
+```
+
+Also there are lot of NAs which we will replace with the mean of that variable to make it easier to work with the data.
+
+```{r}
+x <- data.matrix(training)
+training <- data.frame(x)
+
+x <- data.matrix(testing)
+testing <- data.frame(x)
+
+x <- data.matrix(testData)
+testData <- data.frame(x)
+
+impute.mean <- function(x){ 
+  m <- mean(x, na.rm = TRUE) 
+  x[is.na(x)] <- m 
+  x 
+  } 
+
+x <- apply(training, 2, impute.mean)
+training <- data.frame(x)
+
+x <- apply(testing,2,impute.mean)
+testing <- data.frame(x)
+
+x <- apply(testData,2,impute.mean)
+testData <- data.frame(x)
+```
+
+In the summary we also observed that quite a few predictors don't have a lot of variance. Let's remove those predictors.
+```{r}
+nzv <- nearZeroVar(training,saveMetrics=TRUE)
+nzv <- nzv[nzv$nzv==FALSE,]
+
+training <- training[,rownames(nzv)]
+
+testing <- testing[,rownames(nzv)]
+
+testData <- testData[,rownames(nzv)]
+```
+
+Remove collinearity among the predictors
+```{r}
+x <- cor(training)
+y <- findCorrelation(x, cutoff = .75) 
+
+training <- training[,-y]
+testing <- testing[,-y]
+testData <- testData[,-y]
+```
+## Model Building
+We will build the model using random forest. We will also get the importance of the variables used to build the classification trees, so we can examine which variables are more important.
+```{r}
+modelFit <- train(trainingClasse ~ .,data=training, method="rf",importance=TRUE,prox=TRUE,trControl=trainControl("cv"))
+```
+## Cross-Validation of Model
+In random forests, there is no need for cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run, as follows:
+
+Each tree is constructed using a different bootstrap sample from the original data. About one-third of the cases are left out of the bootstrap sample and not used in the construction of the kth tree.
+
+Put each case left out in the construction of the kth tree down the kth tree to get a classification. In this way, a test set classification is obtained for each case in about one-third of the trees. At the end of the run, take j to be the class that got most of the votes every time case n was oob. The proportion of times that j is not equal to the true class of n averaged over all cases is the oob error estimate. This has proven to be unbiased in many tests.  
+But we have still partitioned our training set in training and test set so that we can cross-validate that we have picked the correct predictors.
+```{r}
+modelFit$finalModel
+predictions <- predict(modelFit,testing)
+confusions <- confusionMatrix(testingClasse, predictions)
+print(confusions)
+```
+
+As can be seen the accuracy of the predictions is pretty high and the out of sample error is wihin our bounds i.e. less than 5%.
+
+Let's plot the error rate for each class  
+```{r}
+par(mar=c(3,4,4,4))
+plot(modelFit$finalModel,main="")
+```  
+
+Let's plot the importance of variables on Gini Index  
+
+```{r plot,fig.width=6,fig.height=4, echo=FALSE}
+varImpPlot(modelFit$finalModel,cex=.5,main="")
+```  
+
+Predict the test set and generate answers
+```{r}
+testDataPredictions <- predict(modelFit,testData)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0(getwd(),"/answers/problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+  }
+pml_write_files(testDataPredictions)
+```
